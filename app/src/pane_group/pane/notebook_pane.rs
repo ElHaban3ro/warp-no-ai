@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::{
-    super::{DefaultSessionModeBehavior, Direction},
+    super::Direction,
     view::PaneView,
     DetachType, PaneConfiguration, PaneContent, PaneGroup, PaneId, ShareableLink,
     ShareableLinkError,
@@ -195,7 +195,6 @@ pub(super) fn subscribe_to_link_model(
                 None, /* chosen_shell */
                 Some(path.clone()),
                 None,
-                DefaultSessionModeBehavior::Apply,
                 ctx,
             );
         }

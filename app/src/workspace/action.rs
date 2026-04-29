@@ -638,12 +638,6 @@ pub enum WorkspaceAction {
         path: PathBuf,
         toast_object_id: String,
     },
-    /// Sidecar action: set the hovered item as the Cmd+T default.
-    TabConfigSidecarMakeDefault {
-        mode: crate::settings::ai::DefaultSessionMode,
-        tab_config_path: Option<PathBuf>,
-        shell: Option<AvailableShell>,
-    },
     /// Sidecar action: open the tab config TOML in the user's editor.
     TabConfigSidecarEditConfig {
         path: PathBuf,
@@ -928,7 +922,6 @@ impl WorkspaceAction {
             | SaveCurrentTabAsNewConfig(_)
             | SyncTrafficLights
             | OpenTabConfigErrorFile { .. }
-            | TabConfigSidecarMakeDefault { .. }
             | TabConfigSidecarEditConfig { .. }
             | TabConfigSidecarRemoveConfig { .. }
             | OpenSettingsFile

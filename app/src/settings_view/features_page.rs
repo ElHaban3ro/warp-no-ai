@@ -19,9 +19,8 @@ use super::keybindings::KeyBindingModifyingState;
 #[cfg(feature = "local_tty")]
 use super::settings_page::render_sub_sub_header;
 use super::settings_page::{
-    add_setting, build_reset_button, render_body_item_label, render_dropdown_item_label,
-    render_local_only_icon, Category, LocalOnlyIconState, MatchData, PageType, SettingsWidget,
-    TOGGLE_BUTTON_RIGHT_PADDING,
+    add_setting, build_reset_button, render_body_item_label, render_local_only_icon, Category,
+    LocalOnlyIconState, MatchData, PageType, SettingsWidget, TOGGLE_BUTTON_RIGHT_PADDING,
 };
 use super::settings_page::{
     render_body_item, render_dropdown_item, AdditionalInfo, SettingsPageMeta,
@@ -40,14 +39,13 @@ use crate::search::command_search::settings::{
 use crate::server::telemetry::TelemetryEvent;
 use crate::settings::ai::AISettings;
 use crate::settings::{
-    AISettingsChangedEvent, ScrollSettingsChangedEvent, ShowChangelogAfterUpdate,
-    UserNativeRedirectPreference,
+    ScrollSettingsChangedEvent, ShowChangelogAfterUpdate, UserNativeRedirectPreference,
 };
 use crate::settings::{
     AliasExpansionEnabled, AliasExpansionSettings, AppEditorSettings, AtContextMenuInTerminalMode,
     AutocompleteSymbols, AutosuggestionKeybindingHint, ChangelogSettings, CloudPreferencesSettings,
     CodeSettings, CommandCorrections, CompletionsOpenWhileTyping, CopyOnSelect, CtrlTabBehavior,
-    DefaultSessionMode, EnableSlashCommandsInTerminal, EnableSshWrapper, ErrorUnderliningEnabled,
+    EnableSlashCommandsInTerminal, EnableSshWrapper, ErrorUnderliningEnabled,
     ExtraMetaKeys, GPUSettings, GlobalHotkeyMode, InputSettings, InputSettingsChangedEvent,
     LinuxSelectionClipboard, MiddleClickPasteEnabled, MouseScrollMultiplier,
     OutlineCodebaseSymbolsForAtContextMenu, PreferLowPowerGPU, PreferredGraphicsBackend,
@@ -77,11 +75,10 @@ use crate::terminal::settings::{
 };
 use crate::terminal::{BlockListSettings, SnackbarEnabled};
 use crate::undo_close::UndoCloseSettings;
-use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
 use crate::util::bindings::{
     keybinding_name_to_display_string, reset_keybinding_to_default, set_custom_keybinding,
 };
-use crate::view_components::{Dropdown, DropdownItem, FilterableDropdown};
+use crate::view_components::{Dropdown, DropdownItem};
 use crate::workspace::tab_settings::{NewTabPlacement, TabSettings};
 use crate::workspace::WorkspaceAction;
 use crate::{appearance::Appearance, settings::native_preference::NativePreferenceSettings};
@@ -94,7 +91,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use strum::IntoEnumIterator;
 use warp_core::channel::ChannelState;
 use warp_core::semantic_selection::{
     SemanticSelection, SemanticSelectionChangedEvent, SmartSelectEnabled,
@@ -625,7 +621,6 @@ pub enum FeaturesPageAction {
     SetCtrlTabBehavior(CtrlTabBehavior),
     SetPreferredGraphicsBackend(Option<GraphicsBackend>),
     SetNewTabPlacement(NewTabPlacement),
-    SetDefaultSessionMode(DefaultSessionMode),
     SetDefaultTabConfig(String),
     SearchForKeybinding(String),
     ToggleAutosuggestions,
@@ -1031,10 +1026,6 @@ impl FeaturesPageAction {
                 action: "SetNewTabPlacement".to_string(),
                 value: format!("{new_tab_placement:?}"),
             },
-            Self::SetDefaultSessionMode(mode) => TelemetryEvent::FeaturesPageAction {
-                action: "SetDefaultSessionMode".to_string(),
-                value: format!("{mode:?}"),
-            },
             Self::SetDefaultTabConfig(path) => TelemetryEvent::FeaturesPageAction {
                 action: "SetDefaultTabConfig".to_string(),
                 value: path.clone(),
@@ -1230,7 +1221,6 @@ pub struct FeaturesPageView {
     tab_behavior_dropdown: ViewHandle<Dropdown<FeaturesPageAction>>,
     graphics_backend_dropdown: ViewHandle<Dropdown<FeaturesPageAction>>,
     new_tab_placement_dropdown: ViewHandle<Dropdown<FeaturesPageAction>>,
-    default_session_mode_dropdown: ViewHandle<FilterableDropdown<FeaturesPageAction>>,
     tab_behavior: Tracked<TabBehavior>,
     completions_keystroke: Tracked<String>,
     autosuggestions_keystroke: Tracked<String>,
@@ -1737,12 +1727,8 @@ impl TypedActionView for FeaturesPageView {
             SetNewTabPlacement(new_tab_placement) => {
                 self.set_new_tab_placement(new_tab_placement, ctx)
             }
-            SetDefaultSessionMode(mode) => self.set_default_session_mode(mode, ctx),
             SetDefaultTabConfig(path) => {
                 AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-                    report_if_error!(ai_settings
-                        .default_session_mode_internal
-                        .set_value(DefaultSessionMode::TabConfig, ctx));
                     report_if_error!(ai_settings
                         .default_tab_config_path
                         .set_value(path.clone(), ctx));
@@ -2060,19 +2046,6 @@ impl FeaturesPageView {
             ctx.notify();
         });
 
-        ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, event, ctx| {
-            if matches!(
-                event,
-                AISettingsChangedEvent::IsAnyAIEnabled { .. }
-                    | AISettingsChangedEvent::DefaultSessionMode { .. }
-            ) {
-                Self::update_default_session_mode_dropdown(
-                    me.default_session_mode_dropdown.clone(),
-                    ctx,
-                );
-                ctx.notify();
-            }
-        });
 
         let pin_position_dropdown = ctx.add_typed_action_view(|ctx| {
             let mut dropdown = Dropdown::new(ctx);
@@ -2136,19 +2109,6 @@ impl FeaturesPageView {
                 Self::update_new_tab_placement_dropdown(me.new_tab_placement_dropdown.clone(), ctx);
             }
             ctx.notify();
-        });
-
-        let default_session_mode_dropdown = ctx.add_typed_action_view(FilterableDropdown::new);
-        Self::update_default_session_mode_dropdown(default_session_mode_dropdown.clone(), ctx);
-
-        ctx.subscribe_to_model(&WarpConfig::handle(ctx), |me, _, event, ctx| {
-            if matches!(event, WarpConfigUpdateEvent::TabConfigs) {
-                Self::update_default_session_mode_dropdown(
-                    me.default_session_mode_dropdown.clone(),
-                    ctx,
-                );
-                ctx.notify();
-            }
         });
 
         #[cfg(feature = "local_fs")]
@@ -2407,7 +2367,6 @@ impl FeaturesPageView {
             ctrl_tab_behavior_dropdown,
             graphics_backend_dropdown,
             new_tab_placement_dropdown,
-            default_session_mode_dropdown,
             tab_behavior: Default::default(),
 
             window_id: ctx.window_id(),
@@ -2428,8 +2387,7 @@ impl FeaturesPageView {
     }
 
     fn build_page(ctx: &mut ViewContext<Self>) -> PageType<Self> {
-        let mut general_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
-            vec![Box::new(DefaultSessionModeWidget::default())];
+        let mut general_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = Vec::new();
 
         let native_preference_settings = NativePreferenceSettings::as_ref(ctx);
         if native_preference_settings
@@ -3300,86 +3258,6 @@ impl FeaturesPageView {
     fn set_new_tab_placement(&mut self, value: &NewTabPlacement, ctx: &mut ViewContext<Self>) {
         let _ = TabSettings::handle(ctx).update(ctx, |tab_settings, ctx| {
             tab_settings.new_tab_placement.set_value(*value, ctx)
-        });
-    }
-
-    fn update_default_session_mode_dropdown(
-        dropdown: ViewHandle<FilterableDropdown<FeaturesPageAction>>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        dropdown.update(
-            ctx,
-            |dropdown: &mut FilterableDropdown<FeaturesPageAction>, ctx| {
-                let is_ai_enabled = AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
-
-                if is_ai_enabled {
-                    dropdown.set_enabled(ctx);
-                } else {
-                    dropdown.set_disabled(ctx);
-                }
-
-                let ai_settings = AISettings::as_ref(ctx);
-                let current_mode = ai_settings.default_session_mode(ctx);
-                let current_tab_config_path = ai_settings.default_tab_config_path().to_string();
-
-                // Build items: built-in modes (skip TabConfig since configs are listed individually,
-                // and skip DockerSandbox when its feature flag is disabled).
-                let docker_sandbox_enabled = FeatureFlag::LocalDockerSandbox.is_enabled();
-                let mut items: Vec<DropdownItem<FeaturesPageAction>> = DefaultSessionMode::iter()
-                    .filter(|val| *val != DefaultSessionMode::TabConfig)
-                    .filter(|val| {
-                        *val != DefaultSessionMode::DockerSandbox || docker_sandbox_enabled
-                    })
-                    .map(|val| {
-                        DropdownItem::new(
-                            val.display_name(),
-                            FeaturesPageAction::SetDefaultSessionMode(val),
-                        )
-                    })
-                    .collect();
-
-                // Append each loaded tab config
-                let tab_configs = WarpConfig::as_ref(ctx).tab_configs().to_vec();
-                for config in &tab_configs {
-                    if let Some(path) = &config.source_path {
-                        items.push(DropdownItem::new(
-                            config.name.clone(),
-                            FeaturesPageAction::SetDefaultTabConfig(
-                                path.to_string_lossy().into_owned(),
-                            ),
-                        ));
-                    }
-                }
-
-                dropdown.set_items(items, ctx);
-
-                // Select the currently active item.
-                let selected_name = match current_mode {
-                    DefaultSessionMode::TabConfig => tab_configs
-                        .iter()
-                        .find(|c| {
-                            c.source_path
-                                .as_ref()
-                                .is_some_and(|p| p.to_string_lossy() == current_tab_config_path)
-                        })
-                        .map(|c| c.name.clone())
-                        .unwrap_or_else(|| DefaultSessionMode::Terminal.display_name().to_string()),
-                    other => other.display_name().to_string(),
-                };
-                dropdown.set_selected_by_name(&selected_name, ctx);
-            },
-        );
-    }
-
-    fn set_default_session_mode(
-        &mut self,
-        value: &DefaultSessionMode,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-            report_if_error!(ai_settings
-                .default_session_mode_internal
-                .set_value(*value, ctx));
         });
     }
 
@@ -6878,55 +6756,6 @@ impl SettingsWidget for NewTabPlacementWidget {
             None,
             &view.new_tab_placement_dropdown,
         )
-    }
-}
-
-#[derive(Default)]
-struct DefaultSessionModeWidget {}
-
-impl SettingsWidget for DefaultSessionModeWidget {
-    type View = FeaturesPageView;
-
-    fn search_terms(&self) -> &str {
-        "default session mode agent terminal new pane tab open config"
-    }
-
-    fn render(
-        &self,
-        view: &Self::View,
-        appearance: &Appearance,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let label = render_dropdown_item_label(
-            "Default mode for new sessions".to_string(),
-            None,
-            LocalOnlyIconState::for_setting(
-                DefaultSessionMode::storage_key(),
-                DefaultSessionMode::sync_to_cloud(),
-                &mut view
-                    .button_mouse_states
-                    .local_only_icon_tooltip_states
-                    .borrow_mut(),
-                app,
-            ),
-            None,
-            appearance,
-        );
-
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(
-                Shrinkable::new(
-                    1.0,
-                    Container::new(Align::new(label).left().finish())
-                        .with_margin_bottom(4.)
-                        .with_padding_right(16.)
-                        .finish(),
-                )
-                .finish(),
-            )
-            .with_child(ChildView::new(&view.default_session_mode_dropdown).finish())
-            .finish()
     }
 }
 

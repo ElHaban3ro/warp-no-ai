@@ -35,7 +35,7 @@ use crate::quit_warning::UnsavedStateSummary;
 #[cfg(target_family = "wasm")]
 use crate::server::cloud_objects::update_manager::UpdateManager;
 use crate::server::server_api::ServerApiProvider;
-use crate::settings::{AISettings, DefaultSessionMode, PaneSettings};
+use crate::settings::PaneSettings;
 use crate::settings_view::SettingsSection;
 use crate::shell_indicator::ShellIndicatorType;
 use crate::terminal::available_shells::{AvailableShell, AvailableShells};
@@ -760,12 +760,6 @@ pub struct NewTerminalOptions {
     pub is_shared_session_creator: IsSharedSessionCreator,
     /// The AI conversation to restore when the terminal is created.
     pub conversation_restoration: Option<ConversationRestorationInNewPaneType>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DefaultSessionModeBehavior {
-    Apply,
-    Ignore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3895,20 +3889,19 @@ impl PaneGroup {
         new_pane_id
     }
 
-    /// Adds a terminal split pane without applying the user's default session mode.
-    pub fn add_terminal_pane_ignoring_default_session_mode(
+    /// Adds a terminal split pane.
+    pub fn add_terminal_pane_split(
         &mut self,
         direction: Direction,
         chosen_shell: Option<AvailableShell>,
         ctx: &mut ViewContext<Self>,
     ) -> TerminalPaneId {
-        let new_pane_id = self.add_session_with_default_session_mode_behavior(
+        let new_pane_id = self.add_session(
             direction,
             Some(self.focused_pane_id(ctx)),
             self.active_session_id(ctx),
             chosen_shell,
             None, /* conversation_restoration */
-            DefaultSessionModeBehavior::Ignore,
             ctx,
         );
         ctx.emit(Event::AppStateChanged);
@@ -5775,29 +5768,6 @@ impl PaneGroup {
         conversation_restoration: Option<ConversationRestorationInNewPaneType>,
         ctx: &mut ViewContext<Self>,
     ) -> TerminalPaneId {
-        self.add_session_with_default_session_mode_behavior(
-            direction,
-            base_pane_id_for_split,
-            base_pane_id_for_context,
-            chosen_shell,
-            conversation_restoration,
-            DefaultSessionModeBehavior::Apply,
-            ctx,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn add_session_with_default_session_mode_behavior(
-        &mut self,
-        direction: Direction,
-        base_pane_id_for_split: Option<PaneId>,
-        base_pane_id_for_context: Option<TerminalPaneId>,
-        chosen_shell: Option<AvailableShell>,
-        conversation_restoration: Option<ConversationRestorationInNewPaneType>,
-        default_session_mode_behavior: DefaultSessionModeBehavior,
-        ctx: &mut ViewContext<Self>,
-    ) -> TerminalPaneId {
-        // If restoring a conversation, use its initial working directory if it exists
         let startup_directory_from_conversation = conversation_restoration
             .as_ref()
             .and_then(|restoration| restoration.initial_working_directory())
@@ -5827,7 +5797,6 @@ impl PaneGroup {
             chosen_shell,
             startup_directory,
             conversation_restoration,
-            default_session_mode_behavior,
             ctx,
         )
     }
@@ -5886,16 +5855,9 @@ impl PaneGroup {
         chosen_shell: Option<AvailableShell>,
         startup_directory: Option<PathBuf>,
         conversation_restoration: Option<ConversationRestorationInNewPaneType>,
-        default_session_mode_behavior: DefaultSessionModeBehavior,
         ctx: &mut ViewContext<Self>,
     ) -> TerminalPaneId {
-        let should_immediately_enter_agent_view = matches!(
-            default_session_mode_behavior,
-            DefaultSessionModeBehavior::Apply
-        ) && conversation_restoration.is_none()
-            && AISettings::as_ref(ctx).default_session_mode(ctx) == DefaultSessionMode::Agent;
-
-        let (pane_data, view) = self.create_terminal_pane_data(
+        let (pane_data, _view) = self.create_terminal_pane_data(
             startup_directory,
             HashMap::new(),
             chosen_shell,
@@ -5905,17 +5867,6 @@ impl PaneGroup {
         let new_pane_id = pane_data.terminal_pane_id();
 
         let _ = self.add_pane(direction, base_pane_id, Box::new(pane_data), true, ctx);
-
-        // Enter agent view if default session mode is Agent and AI is enabled
-        if should_immediately_enter_agent_view {
-            view.update(ctx, |terminal_view, ctx| {
-                terminal_view.enter_agent_view_for_new_conversation(
-                    None,
-                    AgentViewEntryOrigin::DefaultSessionMode,
-                    ctx,
-                );
-            });
-        }
 
         new_pane_id
     }
@@ -6682,13 +6633,12 @@ impl PaneGroup {
             }
         };
 
-        self.add_session_with_default_session_mode_behavior(
+        self.add_session(
             Direction::Right,
             None,
             self.focused_pane_id(ctx).as_terminal_pane_id(),
             None, /* chosen_shell */
             None, /* conversation_restoration */
-            DefaultSessionModeBehavior::Ignore,
             ctx,
         );
 

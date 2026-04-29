@@ -173,7 +173,7 @@ use crate::server::server_api::ai::AIClient;
 use crate::server::server_api::auth::AuthClient;
 use crate::settings::{
     AISettings, AISettingsChangedEvent, CodeSettings, CodeSettingsChangedEvent, CtrlTabBehavior,
-    DefaultSessionMode, InputModeSettings,
+    InputModeSettings,
 };
 use crate::settings_view::environments_page::EnvironmentsPage;
 use crate::settings_view::pane_manager::SettingsPaneManager;
@@ -823,14 +823,6 @@ struct WorkspaceBannerFields {
     description: String,
     secondary_button: Option<WorkspaceBannerButtonDetails>,
     button: Option<WorkspaceBannerButtonDetails>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DefaultSessionModeBehavior {
-    /// Respect the user's default-session-mode setting and auto-enter agent view when applicable.
-    Apply,
-    /// Skip default-session-mode auto-entry because the caller is explicitly specifying the mode for the new session.
-    Ignore,
 }
 
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -1913,16 +1905,11 @@ impl Workspace {
     ) {
         match event {
             RemoveTabConfigConfirmationEvent::Confirm { path } => {
-                // If the removed config was the default, revert to Terminal.
                 let ai_settings = AISettings::as_ref(ctx);
-                let is_removed_default = ai_settings.default_session_mode(ctx)
-                    == DefaultSessionMode::TabConfig
-                    && ai_settings.default_tab_config_path() == path.to_string_lossy();
+                let is_removed_default =
+                    ai_settings.default_tab_config_path() == path.to_string_lossy();
                 if is_removed_default {
                     AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                        report_if_error!(settings
-                            .default_session_mode_internal
-                            .set_value(DefaultSessionMode::Terminal, ctx));
                         report_if_error!(settings
                             .default_tab_config_path
                             .set_value(String::new(), ctx));
@@ -2069,11 +2056,6 @@ impl Workspace {
         let old_pane_group_id = self.active_tab_pane_group().id();
         let has_params = !config.params.is_empty();
 
-        // Save and open the tab config. The user's `default_session_mode`
-        // is intentionally left untouched: creating a tab config should not
-        // change the global default for new tabs.
-        // Agent view entry for Oz is handled by PaneMode::Agent in the tab config,
-        // so no manual enter_agent_view call is needed.
         let dir = crate::user_config::tab_configs_dir();
         if let Err(e) = write_tab_config(&config, &dir, "startup_config") {
             log::warn!("Failed to write startup tab config: {e:?}");
@@ -3576,7 +3558,7 @@ impl Workspace {
                     }
                     // If we still haven't created any tabs after attempting to restore, create a new tab
                     // with sensible defaults.
-                    self.add_new_session_tab_with_default_mode(
+                    self.add_new_session_tab(
                         NewSessionSource::Window,
                         None,  /* previous_active_window */
                         None,  /* chosen_shell */
@@ -3820,7 +3802,7 @@ impl Workspace {
             } else if FeatureFlag::WelcomeTab.is_enabled() {
                 self.add_welcome_tab(ctx);
             } else {
-                self.add_new_session_tab_with_default_mode(
+                self.add_new_session_tab(
                     NewSessionSource::Window,
                     previous_active_window,
                     shell,
@@ -4283,13 +4265,12 @@ impl Workspace {
         zero_state_prompt_suggestion_type: Option<ZeroStatePromptSuggestionType>,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.add_new_session_tab_internal_with_default_session_mode_behavior(
+        self.add_new_session_tab(
             NewSessionSource::Tab,
             Some(ctx.window_id()),
             None,
             None,
             false,
-            DefaultSessionModeBehavior::Ignore,
             ctx,
         );
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
@@ -4316,13 +4297,12 @@ impl Workspace {
     /// Add a new terminal tab and enter the agent view with a new conversation.
     fn add_terminal_tab_with_new_agent_view(&mut self, ctx: &mut ViewContext<Self>) {
         let was_left_panel_open = self.active_tab_pane_group().as_ref(ctx).left_panel_open;
-        self.add_new_session_tab_internal_with_default_session_mode_behavior(
+        self.add_new_session_tab(
             NewSessionSource::Tab,
             Some(ctx.window_id()),
             None,
             None,
             false,
-            DefaultSessionModeBehavior::Ignore,
             ctx,
         );
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
@@ -5995,37 +5975,26 @@ impl Workspace {
         let mut menu_items = vec![];
 
         let is_any_ai_enabled = AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
-        let ai_settings = AISettings::as_ref(ctx);
-        let effective_default = ai_settings.default_session_mode(ctx);
-        let default_tab_config_path = ai_settings.default_tab_config_path().to_string();
         let shortcut_label = keybinding_name_to_display_string(NEW_TAB_BINDING_NAME, ctx);
 
         // 1. Agent (if AI enabled)
         if is_any_ai_enabled {
-            let mut agent_item = MenuItemFields::new("Agent")
+            let agent_item = MenuItemFields::new("Agent")
                 .with_on_select_action(WorkspaceAction::AddAgentTab)
                 .with_icon(icons::Icon::LayoutAlt01);
-            if effective_default == DefaultSessionMode::Agent {
-                agent_item = agent_item.with_key_shortcut_label(shortcut_label.clone());
-            }
             menu_items.push(agent_item.into_item());
         }
 
-        // 2. Terminal (+ individual shells on Windows)
+        // 2. Terminal (+ individual shells on Windows). Cmd+T always opens a terminal tab.
         {
-            // On Windows, list the default terminal and each available shell as
-            // individual top-level items (no submenu) so each gets a sidecar.
             #[cfg(target_os = "windows")]
             {
-                let is_terminal_default = effective_default == DefaultSessionMode::Terminal;
-                let mut terminal_item = MenuItemFields::new("Terminal")
+                let terminal_item = MenuItemFields::new("Terminal")
                     .with_on_select_action(WorkspaceAction::AddTerminalTab {
                         hide_homepage: false,
                     })
-                    .with_icon(icons::Icon::LayoutAlt01);
-                if is_terminal_default {
-                    terminal_item = terminal_item.with_key_shortcut_label(shortcut_label.clone());
-                }
+                    .with_icon(icons::Icon::LayoutAlt01)
+                    .with_key_shortcut_label(shortcut_label.clone());
                 menu_items.push(terminal_item.into_item());
 
                 #[cfg(feature = "local_tty")]
@@ -6052,17 +6021,14 @@ impl Workspace {
                 }
             }
 
-            // On other platforms, Terminal is a regular item.
             #[cfg(not(target_os = "windows"))]
             {
-                let mut terminal_item = MenuItemFields::new("Terminal")
+                let terminal_item = MenuItemFields::new("Terminal")
                     .with_on_select_action(WorkspaceAction::AddTerminalTab {
                         hide_homepage: false,
                     })
-                    .with_icon(icons::Icon::LayoutAlt01);
-                if effective_default == DefaultSessionMode::Terminal {
-                    terminal_item = terminal_item.with_key_shortcut_label(shortcut_label.clone());
-                }
+                    .with_icon(icons::Icon::LayoutAlt01)
+                    .with_key_shortcut_label(shortcut_label.clone());
                 menu_items.push(terminal_item.into_item());
             }
         }
@@ -6072,23 +6038,17 @@ impl Workspace {
             && FeatureFlag::AgentView.is_enabled()
             && FeatureFlag::CloudMode.is_enabled()
         {
-            let mut cloud_item = MenuItemFields::new("Cloud Oz")
+            let cloud_item = MenuItemFields::new("Cloud Oz")
                 .with_on_select_action(WorkspaceAction::AddAmbientAgentTab)
                 .with_icon(icons::Icon::LayoutAlt01);
-            if effective_default == DefaultSessionMode::CloudAgent {
-                cloud_item = cloud_item.with_key_shortcut_label(shortcut_label.clone());
-            }
             menu_items.push(cloud_item.into_item());
         }
 
         // 3b. Local Docker Sandbox
         if FeatureFlag::LocalDockerSandbox.is_enabled() {
-            let mut docker_item = MenuItemFields::new("Local Docker Sandbox")
+            let docker_item = MenuItemFields::new("Local Docker Sandbox")
                 .with_on_select_action(WorkspaceAction::AddDockerSandboxTab)
                 .with_icon(icons::Icon::Docker);
-            if effective_default == DefaultSessionMode::DockerSandbox {
-                docker_item = docker_item.with_key_shortcut_label(shortcut_label.clone());
-            }
             menu_items.push(docker_item.into_item());
         }
 
@@ -6096,8 +6056,6 @@ impl Workspace {
         if FeatureFlag::TabConfigs.is_enabled() {
             let tab_configs = WarpConfig::as_ref(ctx).tab_configs().to_vec();
 
-            // Count occurrences of each config name so we can disambiguate
-            // duplicates in the menu (e.g. "My Tab Config", "My Tab Config (1)").
             let mut name_totals: HashMap<String, usize> = HashMap::new();
             for config in &tab_configs {
                 *name_totals.entry(config.name.clone()).or_default() += 1;
@@ -6111,11 +6069,6 @@ impl Workspace {
                 } else {
                     icons::Icon::LayoutAlt01
                 };
-                let is_default_config = effective_default == DefaultSessionMode::TabConfig
-                    && tab_config
-                        .source_path
-                        .as_ref()
-                        .is_some_and(|p| p.to_string_lossy() == default_tab_config_path);
 
                 let display_name = if name_totals.get(&tab_config.name).copied().unwrap_or(0) > 1 {
                     let seen = name_seen.entry(tab_config.name.clone()).or_default();
@@ -6129,12 +6082,9 @@ impl Workspace {
                     tab_config.name.clone()
                 };
 
-                let mut item = MenuItemFields::new(display_name)
+                let item = MenuItemFields::new(display_name)
                     .with_on_select_action(WorkspaceAction::SelectTabConfig(tab_config))
                     .with_icon(icon);
-                if is_default_config {
-                    item = item.with_key_shortcut_label(shortcut_label.clone());
-                }
                 menu_items.push(item.into_item());
             }
         }
@@ -7526,7 +7476,7 @@ impl Workspace {
             // A tab may not have any active session, say if it only contains notebook(s). If
             // that's the case, create a new tab.
             if active_session_handle.is_none() {
-                self.add_new_session_tab_with_default_mode(
+                self.add_new_session_tab(
                     NewSessionSource::Tab,
                     None,
                     None,
@@ -8675,34 +8625,10 @@ impl Workspace {
             })
         });
 
+        let _ = label;
         let item_kind = match &hovered_action {
             Some(WorkspaceAction::SelectTabConfig(config)) => SidecarItemKind::UserTabConfig {
                 config: config.clone(),
-            },
-            Some(WorkspaceAction::AddAgentTab) => SidecarItemKind::BuiltIn {
-                name: label.to_string(),
-                default_mode: DefaultSessionMode::Agent,
-                shell: None,
-            },
-            Some(WorkspaceAction::AddAmbientAgentTab) => SidecarItemKind::BuiltIn {
-                name: label.to_string(),
-                default_mode: DefaultSessionMode::CloudAgent,
-                shell: None,
-            },
-            Some(WorkspaceAction::AddTerminalTab { .. }) => SidecarItemKind::BuiltIn {
-                name: label.to_string(),
-                default_mode: DefaultSessionMode::Terminal,
-                shell: None,
-            },
-            Some(WorkspaceAction::AddTabWithShell { shell, .. }) => SidecarItemKind::BuiltIn {
-                name: label.to_string(),
-                default_mode: DefaultSessionMode::Terminal,
-                shell: Some(shell.clone()),
-            },
-            Some(WorkspaceAction::AddDockerSandboxTab) => SidecarItemKind::BuiltIn {
-                name: label.to_string(),
-                default_mode: DefaultSessionMode::DockerSandbox,
-                shell: None,
             },
             _ => {
                 // Hovered item has no associated sidecar. Clear any stale
@@ -9256,14 +9182,7 @@ impl Workspace {
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| repo_path.clone());
         let config_name = format!("Worktree: {repo_display_name}");
-        // Use the user's default session mode to decide pane type.
-        let pane_type = if AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
-            && AISettings::as_ref(ctx).default_session_mode(ctx) == DefaultSessionMode::Agent
-        {
-            "agent"
-        } else {
-            "terminal"
-        };
+        let pane_type = "terminal";
         log::info!(
             "Materializing default worktree config: repo_path={repo_path:?}, branch_name={branch_name:?}, pane_type={pane_type}"
         );
@@ -10470,7 +10389,7 @@ impl Workspace {
     }
 
     pub fn add_terminal_tab(&mut self, hide_homepage: bool, ctx: &mut ViewContext<Self>) {
-        self.add_new_session_tab_with_default_mode(
+        self.add_new_session_tab(
             NewSessionSource::Tab,
             Some(ctx.window_id()),
             None,
@@ -10541,13 +10460,12 @@ impl Workspace {
                     sbx_path,
                     DEFAULT_DOCKER_SANDBOX_BASE_IMAGE.map(str::to_owned),
                 );
-                me.add_new_session_tab_internal_with_default_session_mode_behavior(
+                me.add_new_session_tab(
                     NewSessionSource::Tab,
                     Some(window_id),
                     Some(shell),
                     None,
                     true, /* hide_homepage */
-                    DefaultSessionModeBehavior::Ignore,
                     ctx,
                 );
                 ctx.notify();
@@ -10595,7 +10513,7 @@ impl Workspace {
             },
             ctx
         );
-        self.add_new_session_tab_with_default_mode(
+        self.add_new_session_tab(
             NewSessionSource::Tab,
             Some(ctx.window_id()),
             Some(shell),
@@ -10606,7 +10524,7 @@ impl Workspace {
         ctx.notify();
     }
 
-    fn add_new_session_tab_with_default_mode(
+    fn add_new_session_tab(
         &mut self,
         new_session_source: NewSessionSource,
         previous_session_window_id: Option<WindowId>,
@@ -10615,34 +10533,6 @@ impl Workspace {
         hide_homepage: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.add_new_session_tab_internal_with_default_session_mode_behavior(
-            new_session_source,
-            previous_session_window_id,
-            chosen_shell,
-            conversation_restoration,
-            hide_homepage,
-            DefaultSessionModeBehavior::Apply,
-            ctx,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn add_new_session_tab_internal_with_default_session_mode_behavior(
-        &mut self,
-        new_session_source: NewSessionSource,
-        previous_session_window_id: Option<WindowId>,
-        chosen_shell: Option<AvailableShell>,
-        conversation_restoration: Option<ConversationRestorationInNewPaneType>,
-        hide_homepage: bool,
-        default_session_mode_behavior: DefaultSessionModeBehavior,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // Check if we should default to agent mode (only for new sessions, not restorations)
-        let should_enter_agent_view = matches!(
-            default_session_mode_behavior,
-            DefaultSessionModeBehavior::Apply
-        ) && conversation_restoration.is_none()
-            && AISettings::as_ref(ctx).default_session_mode(ctx) == DefaultSessionMode::Agent;
         #[cfg(feature = "local_tty")]
         let is_docker_sandbox = chosen_shell
             .as_ref()
@@ -10653,7 +10543,6 @@ impl Workspace {
             false
         };
 
-        // If restoring a conversation, use its initial working directory if it exists
         let startup_directory_from_conversation = conversation_restoration
             .as_ref()
             .and_then(|restoration| restoration.initial_working_directory())
@@ -10696,27 +10585,6 @@ impl Workspace {
         }
         #[cfg(not(all(feature = "local_tty", not(target_family = "wasm"))))]
         let _ = is_docker_sandbox;
-        // If the default session mode is Agent and AI is enabled, enter agent view
-        if should_enter_agent_view {
-            self.enter_agent_view_on_active_tab(ctx);
-        }
-    }
-
-    /// Enters agent view with a new conversation on the active tab's terminal.
-    ///
-    /// Used after adding a new tab when the session mode should default to agent view.
-    fn enter_agent_view_on_active_tab(&self, ctx: &mut ViewContext<Self>) {
-        self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
-            if let Some(terminal_view) = pane_group.active_session_view(ctx) {
-                terminal_view.update(ctx, |view, ctx| {
-                    view.enter_agent_view_for_new_conversation(
-                        None,
-                        AgentViewEntryOrigin::DefaultSessionMode,
-                        ctx,
-                    );
-                });
-            }
-        });
     }
 
     pub fn add_tab_with_pane_layout(
@@ -11575,7 +11443,7 @@ impl Workspace {
 
             if should_open_in_new_tab {
                 let forked_conversation_id = forked_conversation.id();
-                workspace.add_new_session_tab_with_default_mode(
+                workspace.add_new_session_tab(
                     NewSessionSource::Tab,
                     Some(window_id),
                     None,
@@ -15862,13 +15730,12 @@ impl Workspace {
             }
             CodexModalEvent::UseCodex => {
                 // Add a new terminal tab
-                self.add_new_session_tab_internal_with_default_session_mode_behavior(
+                self.add_new_session_tab(
                     NewSessionSource::Tab,
                     Some(ctx.window_id()),
                     None,
                     None,
                     false,
-                    DefaultSessionModeBehavior::Ignore,
                     ctx,
                 );
                 ctx.notify();
@@ -15957,7 +15824,7 @@ impl Workspace {
         });
 
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
-            let pane_id = pane_group.add_terminal_pane_ignoring_default_session_mode(
+            let pane_id = pane_group.add_terminal_pane_split(
                 pane_group::Direction::Right,
                 None,
                 ctx,
@@ -16010,13 +15877,12 @@ impl Workspace {
     ) {
         send_telemetry_from_ctx!(TelemetryEvent::LinearIssueLinkOpened, ctx);
 
-        self.add_new_session_tab_internal_with_default_session_mode_behavior(
+        self.add_new_session_tab(
             NewSessionSource::Tab,
             Some(ctx.window_id()),
             None,  // Chosen shell
             None,  // Conversation restoration
             false, // Hide the agent view homepage
-            DefaultSessionModeBehavior::Ignore,
             ctx,
         );
 
@@ -19699,50 +19565,19 @@ impl TypedActionView for Workspace {
                 self.close_tabs_direction(self.active_tab_index, TabMovement::Right, false, ctx)
             }
             AddDefaultTab => {
-                let effective_mode = AISettings::as_ref(ctx).default_session_mode(ctx);
-                match effective_mode {
-                    DefaultSessionMode::TabConfig => {
-                        let ai_settings = AISettings::as_ref(ctx);
-                        if let Some(config) = ai_settings.resolved_default_tab_config(ctx) {
-                            self.open_tab_config(config, ctx);
-                        } else {
-                            // Config missing or deleted — clear and fall through to Terminal.
-                            AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                                report_if_error!(settings
-                                    .default_session_mode_internal
-                                    .set_value(DefaultSessionMode::Terminal, ctx));
-                                report_if_error!(settings
-                                    .default_tab_config_path
-                                    .set_value(String::new(), ctx));
-                            });
-                            self.add_terminal_tab(false, ctx);
-                        }
-                    }
-                    DefaultSessionMode::CloudAgent => {
-                        self.add_ambient_agent_tab(ctx);
-                    }
-                    DefaultSessionMode::DockerSandbox => {
-                        self.add_docker_sandbox_tab(ctx);
-                    }
-                    // Terminal and Agent are handled by the existing path
-                    // (add_terminal_tab applies DefaultSessionMode::Agent internally).
-                    DefaultSessionMode::Terminal | DefaultSessionMode::Agent => {
-                        if FeatureFlag::WelcomeTab.is_enabled() {
-                            self.add_welcome_tab(ctx);
-                        } else {
-                            self.add_terminal_tab(false, ctx);
-                        }
-                    }
+                if FeatureFlag::WelcomeTab.is_enabled() {
+                    self.add_welcome_tab(ctx);
+                } else {
+                    self.add_terminal_tab(false, ctx);
                 }
             }
             AddTerminalTab { hide_homepage } => {
-                self.add_new_session_tab_internal_with_default_session_mode_behavior(
+                self.add_new_session_tab(
                     NewSessionSource::Tab,
                     Some(window_id),
                     None,
                     None,
                     *hide_homepage,
-                    DefaultSessionModeBehavior::Ignore,
                     ctx,
                 );
                 ctx.notify();
@@ -19823,29 +19658,6 @@ impl TypedActionView for Workspace {
                     );
                 }
                 self.dismiss_older_toasts(toast_object_id, ctx);
-            }
-            TabConfigSidecarMakeDefault {
-                mode,
-                tab_config_path,
-                #[cfg_attr(not(feature = "local_tty"), allow(unused_variables))]
-                shell,
-            } => {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings.default_session_mode_internal.set_value(*mode, ctx));
-                    if let Some(path) = tab_config_path {
-                        report_if_error!(settings
-                            .default_tab_config_path
-                            .set_value(path.to_string_lossy().into_owned(), ctx));
-                    }
-                });
-                #[cfg(feature = "local_tty")]
-                if let Some(shell) = shell {
-                    use crate::terminal::available_shells::AvailableShells;
-                    AvailableShells::handle(ctx).update(ctx, |model, ctx| {
-                        let _ = model.set_user_preferred_shell(shell.clone(), ctx);
-                    });
-                }
-                self.close_new_session_dropdown_menu(ctx);
             }
             TabConfigSidecarEditConfig {
                 #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
@@ -22226,33 +22038,9 @@ impl View for Workspace {
                 });
 
                 if let Some(anchor_label) = anchor_label {
-                    let is_already_default = {
-                        let ai_settings = AISettings::as_ref(app);
-                        let current_mode = ai_settings.default_session_mode(app);
-                        let current_path = ai_settings.default_tab_config_path();
-                        match sidecar_item {
-                            SidecarItemKind::BuiltIn {
-                                default_mode,
-                                shell,
-                                ..
-                            } => {
-                                current_mode == *default_mode
-                                    && *default_mode != DefaultSessionMode::TabConfig
-                                    && shell.is_none()
-                            }
-                            SidecarItemKind::UserTabConfig { config } => {
-                                current_mode == DefaultSessionMode::TabConfig
-                                    && config
-                                        .source_path
-                                        .as_ref()
-                                        .is_some_and(|p| p.to_string_lossy() == current_path)
-                            }
-                        }
-                    };
                     let sidecar_content = crate::tab_configs::action_sidecar::render_action_sidecar(
                         sidecar_item,
                         &self.tab_config_action_sidecar_mouse_states,
-                        is_already_default,
                         app,
                     );
                     let sidecar_element =
