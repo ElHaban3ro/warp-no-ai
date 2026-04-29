@@ -1,6 +1,6 @@
 [package]
 authors = ["Warp Team <dev@warp.dev>"]
-default-run = "warp-oss"
+default-run = "DownWarp"
 description = "The cloud-backed terminal for individuals and teams"
 edition = "2021"
 autobins = false
@@ -19,6 +19,11 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "warp-oss"
+path = "src/bin/oss.rs"
+test = false
+
+[[bin]]
+name = "DownWarp"
 path = "src/bin/oss.rs"
 test = false
 
@@ -932,7 +937,7 @@ cloud_mode_input_v2 = ["cloud_mode"]
 category = "public.app-category.developer-tools"
 copyright = "© 2025, Denver Technologies, Inc"
 identifier = "dev.warp.WarpOss"
-name = "WarpOss"
+name = "DownWarp"
 resources = ["assets/onboarding"]
 icon = ["channels/oss/icon/no-padding/512x512.png", "channels/oss/icon/no-padding/icon.ico"]
 short_description = "The open-source, cloud-backed terminal for individuals and teams."

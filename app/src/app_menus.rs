@@ -6,7 +6,7 @@ use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::auth::AuthStateProvider;
 use crate::default_terminal::DefaultTerminal;
 use crate::features::{runtime_flags_menu_items, FeatureFlag};
-use crate::root_view::OpenLaunchConfigArg;
+use crate::root_view::{OpenLaunchConfigArg, WINDOW_TITLE};
 use crate::server::telemetry::LaunchConfigUiLocation;
 use crate::settings::{
     AISettings, BlockVisibilitySettings, DebugSettings, SelectionSettings,
@@ -243,7 +243,7 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
         None,
     )));
     menu_items.push(MenuItem::Standard(StandardAction::Quit));
-    Menu::new("Warp", menu_items)
+    Menu::new(WINDOW_TITLE, menu_items)
 }
 
 fn make_new_file_menu(ctx: &AppContext) -> Menu {
