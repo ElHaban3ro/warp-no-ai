@@ -94,6 +94,9 @@ impl History {
                 !ignored_suggestions.is_ignored(&entry.command, SuggestionType::ShellCommand)
             })
             .filter(move |entry| include_agent_commands || !entry.is_agent_executed)
+            // Drop commands whose last run exited with a non-successful status
+            // so failed commands aren't surfaced in autocomplete/up-arrow.
+            .filter(|entry| !entry.is_failed_for_suggestions())
             .map(|entry| HistoryInputSuggestion::Command { entry });
 
         let should_include_prompts = config.include_prompts

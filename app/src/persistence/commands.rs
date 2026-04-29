@@ -3,8 +3,18 @@ use diesel::{sqlite::SqliteConnection, ExpressionMethods, QueryDsl, RunQueryDsl}
 
 use crate::terminal::event::UserBlockCompleted;
 
+/// Exit codes considered "successful" — kept in sync with
+/// `warp_core::command::ExitCode::was_successful` (0, 130 SIGINT, 141 SIGPIPE,
+/// Windows STATUS_CONTROL_C_EXIT). Used to exclude failed historical commands
+/// from autosuggestion / next-command predictions.
+const SUCCESSFUL_EXIT_CODES: &[i32] = &[0, 130, 141, -1073741510];
+
 /// Returns the command that was run right after `command`
 /// in the same session, if any.
+///
+/// Skips successors that exited with a non-successful status so the
+/// autosuggestion engine never proposes a known-failed command as the next
+/// step.
 pub fn get_next_command(
     conn: &mut SqliteConnection,
     command: &super::model::Command,
@@ -14,6 +24,9 @@ pub fn get_next_command(
         .filter(super::schema::commands::columns::session_id.eq(&command.session_id))
         // Skip any empty blocks
         .filter(super::schema::commands::columns::command.ne(""))
+        // Skip commands that haven't reported an exit code yet (still running
+        // or crashed before completion) and any that ended in failure.
+        .filter(super::schema::commands::columns::exit_code.eq_any(SUCCESSFUL_EXIT_CODES))
         .order(super::schema::commands::columns::id.asc())
         .limit(1)
         .first::<super::model::Command>(conn)?;

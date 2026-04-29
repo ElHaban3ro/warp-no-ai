@@ -49,7 +49,10 @@ fn test_find_autosuggestion_from_history_error_exit_code() {
         HistoryEntry::with_pwd_and_exit_code("cd Downloads", "/Users/tadej/dev", 0),
     ];
 
-    // We want to return failed commands in case the user wants to run it again.
+    // Commands that exited with a non-successful status are skipped so the
+    // inline autosuggestion doesn't keep proposing typos / known-broken runs.
+    // `cd Documents` (exit 1) is excluded; `cd Pictures` is kept because it
+    // has no exit code (e.g. still running or histfile-only).
     let autosuggestions = find_potential_autosuggestions_from_history(
         history_entries.iter(),
         "cd D",
@@ -61,11 +64,7 @@ fn test_find_autosuggestion_from_history_error_exit_code() {
 
     assert_eq!(
         autosuggestions,
-        vec![
-            "cd Documents".to_owned(),
-            "cd Dotfiles".to_owned(),
-            "cd Downloads".to_owned(),
-        ]
+        vec!["cd Dotfiles".to_owned(), "cd Downloads".to_owned()]
     );
 }
 

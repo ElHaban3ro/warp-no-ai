@@ -400,6 +400,18 @@ impl HistoryEntry {
         }
     }
 
+    /// Returns true iff this entry represents a finished command that exited
+    /// with a non-successful status. SIGINT (130), pager-close (141), and
+    /// Windows STATUS_CONTROL_C_EXIT count as successful per
+    /// [`ExitCode::was_successful`]. Entries with `exit_code = None`
+    /// (still running, or no info) are NOT considered failed — we don't want
+    /// to penalize in-flight commands or histfile entries.
+    pub fn is_failed_for_suggestions(&self) -> bool {
+        self.exit_code
+            .as_ref()
+            .is_some_and(|code| !code.was_successful())
+    }
+
     /// Indicates that at least one of the optional rich history fields is Some.
     pub fn has_metadata(&self) -> bool {
         // Destructure this so that we _must_ update this method when new metadata fields are added
@@ -491,11 +503,15 @@ impl History {
 
     /// Returns an iterator over a tuple of (count, &HistoryEntry) for all commands in the history.
     /// where count is the number of times the command has been run.
+    ///
+    /// Commands whose most recent run failed (non-successful exit code) are
+    /// excluded so they don't feed autocomplete-style suggestions.
     pub fn command_summaries(&self, hostname: String) -> Vec<(u32, &HistoryEntry)> {
         self.persisted_commands_summary
             .iter()
             .filter(|(shell_host, _)| shell_host.hostname == hostname)
             .flat_map(|(_, summaries)| summaries.values())
+            .filter(|summary| !summary.most_recent_entry.is_failed_for_suggestions())
             .map(|summary| (summary.count, &summary.most_recent_entry))
             .collect()
     }

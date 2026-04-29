@@ -811,6 +811,11 @@ fn find_potential_autosuggestions_from_history<'a>(
         if !entry.command.starts_with(buffer_text) {
             continue;
         }
+        // Skip commands whose last run failed so the inline autosuggestion
+        // doesn't keep proposing typos and known-broken invocations.
+        if entry.is_failed_for_suggestions() {
+            continue;
+        }
         let same_dir = entry
             .pwd
             .as_ref()
